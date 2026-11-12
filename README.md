@@ -173,7 +173,7 @@ A few things you can say:
 The thirteen `/ig-*` skills from
 [instagram-agent-skill](https://github.com/squalliram/instagram-agent-skill)
 ship in `bridge/plugins/instagram-agent/`, vendored from commit
-`d03c56b`. They draft Instagram content in your voice: reels with scored hooks
+`64424a4` (tool fixes from instagram-agent-skill PR #1 on top of `d03c56b`). They draft Instagram content in your voice: reels with scored hooks
 and a timed beat sheet, captions, carousels, stories, comments, replies, DMs,
 profile reviews, weekly plans, repurposing and audits. **They never post.**
 Every skill ends with copy for you to post yourself.
