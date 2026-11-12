@@ -168,6 +168,67 @@ A few things you can say:
 > to let them in, and `JARVIS_MCP_SERVERS` to choose which `~/.claude.json`
 > servers JARVIS gets.
 
+### Instagram skills
+
+The thirteen `/ig-*` skills from
+[instagram-agent-skill](https://github.com/squalliram/instagram-agent-skill)
+ship in `bridge/plugins/instagram-agent/`, vendored from commit
+`d03c56b`. They draft Instagram content in your voice: reels with scored hooks
+and a timed beat sheet, captions, carousels, stories, comments, replies, DMs,
+profile reviews, weekly plans, repurposing and audits. **They never post.**
+Every skill ends with copy for you to post yourself.
+
+| Skill | What it drafts |
+|---|---|
+| `/ig-reel` | A Reel: three scored hooks, the script, on-screen text and a beat sheet |
+| `/ig-viral` | A swipe file of what is working in your niche |
+| `/ig-caption` | A linted caption, showing what the feed shows before "more" |
+| `/ig-carousel` | Cover and slide copy for a swipe post |
+| `/ig-story` | The day's story sequence and DM funnel |
+| `/ig-profile` | A profile score out of 100 and the rewrite |
+| `/ig-plan` | The week's posting plan |
+| `/ig-human` | The humanizer: strips AI tells, then scores the draft |
+| `/ig-comment` | Comments on other people's posts |
+| `/ig-reply` | Replies to the thread under your own post |
+| `/ig-dm` | Keyword delivery, first message, collab pitch, follow-ups |
+| `/ig-repurpose` | One long piece into a week of posts |
+| `/ig-audit` | A post-mortem on what you already posted |
+
+**Fill in `voice.md` first.** Every skill reads `~/.claude/instagram/voice.md`.
+Start from the template:
+
+```bash
+mkdir -p ~/.claude/instagram
+cp -n bridge/plugins/instagram-agent/templates/voice.md ~/.claude/instagram/voice.md
+```
+
+Then edit it, or ask JARVIS to write it from three of your own reels.
+
+How it is wired:
+
+- The bridge sets `settingSources: []`, so the SDK never reads
+  `~/.claude/skills` or `.claude/skills`. The pack is passed in as a local
+  plugin instead (`plugins` and `skills` in `bridge/server.mjs`), and the skill
+  list is exact: none of the CLI's bundled skills come with it. Inside the
+  session the skills are plugin-qualified, e.g. `instagram-agent:ig-reel`. You
+  don't type them: say *"Write me a reel about my first client"* and JARVIS
+  picks the skill.
+- `~/.claude` stays refused as a credentials folder, apart from
+  `~/.claude/instagram`, where the skills keep `voice.md`, `swipe.md`, `plan.md`
+  and `log.md`. The plugin folder is a file root too, so the skills can read
+  their own `hooks.json` and `rubric.json`.
+- The six scoring tools (`hookscore.py`, `beats.py`, `caption.py`,
+  `humanize.py`, `detect.py`, `swipe.py`) need `python3` and the shell. Bash
+  is a write tool here, so they only run under `npm run bridge:writes`. There
+  is no read-only allowlist for them: the bridge does not inspect shell
+  commands, so a `python3 …` prefix rule could be chained past, and several of
+  the scripts write files. In read-only mode JARVIS still drafts, without
+  scores.
+- `JARVIS_DISABLE=instagram` leaves the pack out entirely.
+
+To use the same skills in plain Claude Code, copy the folders:
+`cp -r bridge/plugins/instagram-agent/skills/ig-* ~/.claude/skills/`.
+
 ### JARVIS controls the interface
 
 He drives the UI through MCP tools the bridge exposes:
@@ -236,7 +297,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `instagram` |
 | `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
 | `JARVIS_WORKSPACE` | `~/.jarvis/workspace` | The agent's working directory; file tools are confined to it and the temp directory |
@@ -286,7 +347,8 @@ Claude Code CLI would otherwise approve by itself. In read-only mode the agent
 has no shell, and its file tools reach only its workspace (`~/.jarvis/workspace`),
 the temp directory and any folders in `JARVIS_FILE_ROOTS`. Paths that hold
 credentials, such as `~/.ssh`, `~/.claude` and `.env` files, stay refused even
-inside those folders.
+inside those folders. The one opening is `~/.claude/instagram`, the Instagram
+skills' notes folder (see [Instagram skills](#instagram-skills)).
 
 To allow effectful tools (phone, browser driving, sending), run the bridge this
 way instead:
@@ -338,8 +400,8 @@ not forward it.
 ## Tests
 
 `npm test` runs the bridge's tests with Node's built-in runner. They cover the
-network binding, the tool policy, the MCP server allowlist and the WSL browser
-relay, which runs only under WSL. The network and allowlist tests start the
+network binding, the tool policy, the MCP server allowlist, the vendored
+Instagram plugin and the WSL browser relay, which runs only under WSL. The network and allowlist tests start the
 bridge on a random loopback port, and none of the tests opens an agent session.
 
 ---
@@ -363,8 +425,8 @@ The bridge's defences live in `bridge/server.mjs` and `bridge/policy.mjs`:
   `~/.claude.json` servers the agent gets.
 - Session transcripts are written to `~/.claude/projects` only when
   `JARVIS_KEEP_TRANSCRIPTS=1`.
-- `JARVIS_DISABLE` removes browser control, the camera or the interface tools
-  entirely, and `JARVIS_CLAUDE_EXECUTABLE` can run the agent inside a sandbox
+- `JARVIS_DISABLE` removes browser control, the camera, the interface tools or
+  the Instagram skills entirely, and `JARVIS_CLAUDE_EXECUTABLE` can run the agent inside a sandbox
   wrapper.
 - A strict CSP in `index.html`; model-authored panel HTML is sanitised.
 

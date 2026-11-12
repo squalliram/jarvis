@@ -43,6 +43,10 @@ export const READ_ONLY_BUILTINS = new Set([
   'ListMcpResources', 'ListMcpResourcesTool',
   'ReadMcpResource', 'ReadMcpResourceTool',
   'BashOutput', 'TaskOutput',
+  // Loading a skill only puts its instructions in context; what the skill then
+  // asks for is judged tool by tool. Which skills exist at all is decided by
+  // the bridge's `skills` option, not here.
+  'Skill',
 ])
 export const WRITE_BUILTINS = new Set([
   'Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
@@ -179,8 +183,9 @@ export function decideTool(name, allowWrites = false) {
  * Grep and Glob are named because native builds otherwise search with Bash,
  * which is exactly what read-only mode withholds.
  */
-export function builtinTools(allowWrites = false) {
+export function builtinTools(allowWrites = false, { skills = false } = {}) {
   const reads = ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'ToolSearch']
+  if (skills) reads.push('Skill')
   return allowWrites ? [...reads, 'Bash', 'Write', 'Edit', 'NotebookEdit'] : reads
 }
 
@@ -248,6 +253,22 @@ const inside = (root, p) => {
 }
 
 /**
+ * True when `real` sits inside a root that was placed *inside* the credentials
+ * folder `secretDir` — `~/.claude/instagram` inside `~/.claude`, say. A root
+ * like that is a deliberate, narrow opening; the folder itself, or a root above
+ * it such as the home directory, never is. Compared case-insensitively, as the
+ * secret check is.
+ */
+function carvedOut(secretDir, real, roots) {
+  const lower = (p) => p.toLowerCase()
+  return roots.some((root) => {
+    const rel = relative(lower(secretDir), lower(root))
+    const below = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+    return below && inside(lower(root), lower(real))
+  })
+}
+
+/**
  * The directories file tools may touch: the workspace, the temp directory
  * (screenshots and generated media land there), and JARVIS_FILE_ROOTS.
  */
@@ -276,7 +297,8 @@ export function pathProblem(target, { cwd, roots }) {
   if (inside(home, real)) {
     // Lower-cased: on a case-insensitive volume ~/.SSH is ~/.ssh.
     const rel = relative(home, real).split(sep).join('/').toLowerCase()
-    if (SECRET_DIRS.some((d) => rel === d || rel.startsWith(d + '/'))) {
+    const secret = SECRET_DIRS.find((d) => rel === d || rel.startsWith(d + '/'))
+    if (secret && !carvedOut(resolvePath(home, secret), real, roots)) {
       return `${target} holds credentials`
     }
   }

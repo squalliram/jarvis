@@ -20,6 +20,7 @@ test('decideTool keeps its existing verdicts', () => {
   assert.equal(decideTool('mcp__higgsfield__generate_image'), true)
   assert.equal(decideTool('mcp__elevenlabs__make_outbound_call'), false)
   assert.equal(decideTool('SomeFutureBuiltin'), false)
+  assert.equal(decideTool('Skill'), true)
 })
 
 test('read-only mode refuses a shell command the CLI would auto-approve', () => {
@@ -86,6 +87,45 @@ test('credentials stay refused even when the roots include home', () => {
   assert.equal(ok(join(homedir(), 'certs', 'server.pem')), false)
 })
 
+test('a root inside ~/.claude opens that folder and nothing else in it', () => {
+  const carved = join(homedir(), '.claude', 'instagram')
+  const opened = { allowWrites: true, cwd: workspace, roots: fileRoots({ workspace, extra: [carved] }) }
+  const ok = (name, p) => checkToolUse(name, { file_path: p }, opened).allow
+  assert.equal(ok('Read', join(carved, 'voice.md')), true)
+  assert.equal(ok('Write', join(carved, 'log.md')), true)
+  assert.equal(ok('Read', join(homedir(), '.claude', '.credentials.json')), false)
+  assert.equal(ok('Read', join(homedir(), '.claude', 'instagram-other', 'x.md')), false)
+  assert.equal(ok('Read', join(carved, '..', 'settings.json')), false)
+  assert.equal(ok('Read', join(carved, '.env')), false)
+
+  // The secret folder itself, or anything above it, is never a carve-out.
+  for (const extra of [join(homedir(), '.claude'), homedir()]) {
+    const wide = { allowWrites: false, cwd: workspace, roots: fileRoots({ workspace, extra: [extra] }) }
+    assert.equal(checkToolUse('Read', { file_path: join(carved, 'voice.md') }, wide).allow, false)
+  }
+  assert.equal(allowed('Read', { file_path: join(carved, 'voice.md') }), false) // not a root by default
+})
+
+test('a link inside the carve-out cannot reach the rest of ~/.claude', () => {
+  const secret = join(homedir(), '.claude')
+  mkdirSync(secret, { recursive: true })
+  const carved = mkdtempSync(join(secret, 'jarvis-test-carve-'))
+  const target = join(secret, `jarvis-test-secret-${process.pid}.json`)
+  writeFileSync(target, '{}')
+  try {
+    try {
+      symlinkSync(target, join(carved, 'voice.md'))
+    } catch {
+      return // no symlinks on this filesystem
+    }
+    const opened = { allowWrites: false, cwd: workspace, roots: fileRoots({ workspace, extra: [carved] }) }
+    assert.equal(checkToolUse('Read', { file_path: join(carved, 'voice.md') }, opened).allow, false)
+  } finally {
+    rmSync(carved, { recursive: true, force: true })
+    rmSync(target, { force: true })
+  }
+})
+
 test('writes are confined too, when writes are on', () => {
   mkdirSync(join(workspace, 'out'), { recursive: true })
   assert.equal(allowed('Write', { file_path: join(workspace, 'out', 'a.txt') }, true), true)
@@ -120,4 +160,6 @@ test('only the built-ins JARVIS uses are offered', () => {
     assert.ok(!builtinTools(true).includes(absent), `${absent} should not be offered with writes`)
   }
   assert.ok(builtinTools(true).includes('Bash'))
+  assert.ok(builtinTools(false, { skills: true }).includes('Skill'))
+  assert.ok(!builtinTools(false, { skills: true }).includes('Bash'))
 })
