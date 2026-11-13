@@ -27,6 +27,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { INSTAGRAM_DATA_DIR, INSTAGRAM_PLUGIN_DIR, instagramSkills } from './instagram.mjs'
 import {
   builtinTools,
   checkToolUse,
@@ -160,7 +161,8 @@ const ALLOW_WRITES =
 
 /**
  * Built-in capabilities to leave out entirely: `browser` (the user's own
- * Chrome), `camera`, `interface` (the ui_* tools). A capability left out is
+ * Chrome), `camera`, `interface` (the ui_* tools), `instagram` (the /ig-*
+ * skill pack). A capability left out is
  * not merely denied — its tools never reach the model, which also saves their
  * schemas on every turn (about 3,100, 1,400 and 4,800 input tokens
  * respectively). The display itself is always on; it is how JARVIS shows
@@ -251,6 +253,9 @@ function allowedServers(all, list) {
 
 const MCP_SERVERS = allowedServers(configuredServers(), process.env.JARVIS_MCP_SERVERS)
 
+/** The Instagram skills, or none when JARVIS_DISABLE names `instagram`. See instagram.mjs. */
+const SKILLS = DISABLED.has('instagram') ? [] : instagramSkills()
+
 /**
  * Account connectors — the mail, drive, calendar and other integrations
  * attached to your claude.ai account — are not in ~/.claude.json and are not
@@ -289,10 +294,15 @@ mkdirSync(WORKSPACE, { recursive: true })
 
 const TOOL_ROOTS = fileRoots({
   workspace: WORKSPACE,
-  extra: (process.env.JARVIS_FILE_ROOTS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
+  extra: [
+    // The skills tell the model to read files beside their SKILL.md
+    // (hooks.json, rubric.json) and to keep their notes in ~/.claude/instagram.
+    ...(SKILLS.length ? [INSTAGRAM_PLUGIN_DIR, INSTAGRAM_DATA_DIR] : []),
+    ...(process.env.JARVIS_FILE_ROOTS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ],
 })
 
 /**
@@ -469,6 +479,18 @@ const PROMPT_EYES = `Your eyes:
   list of pictures. They know what their own hands look like.
 
 `
+const PROMPT_INSTAGRAM = `Instagram:
+- The ig-* skills draft Instagram content: reels, captions, carousels, stories,
+  comments, replies, DMs, profile reviews, weekly plans, repurposing, audits.
+  Load the matching skill rather than writing from memory.
+- They draft; you never post, comment, follow or send on Instagram, by browser
+  or any other tool. Put the finished copy on a blade for them to post.
+- Read ~/.claude/instagram/voice.md first. If it is missing or still the
+  template, say so and offer to write it from three of their own reels.
+- The scoring scripts need the shell. Without it, say once that scores are
+  unavailable until writes are enabled, and draft anyway.
+
+`
 const PROMPT_TOOLS = `Using tools:
 - You have real tools on this machine. Use them rather than guessing.
 - Never narrate that you're about to use one. No "Let me search for that" or
@@ -487,6 +509,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
   DISABLED.has('camera') ? '' : PROMPT_EYES,
+  SKILLS.length ? PROMPT_INSTAGRAM : '',
   PROMPT_TOOLS,
 ].join('')
 
@@ -1100,6 +1123,12 @@ console.log(
 // at the tool boundary from one that is broken, and this is the one place the
 // difference can be stated before anybody asks a question that depends on it.
 if (DISABLED.size) console.log(`[jarvis] disabled: ${[...DISABLED].join(', ')}`)
+if (SKILLS.length) {
+  console.log(
+    `[jarvis] instagram skills: ${SKILLS.length}` +
+      (ALLOW_WRITES ? '' : ' (drafting only — the scoring scripts need JARVIS_ALLOW_WRITES=1)'),
+  )
+}
 if (!DISABLED.has('browser')) void chromeAvailable().then((ok) => {
   console.log(
     ok
@@ -1331,7 +1360,17 @@ wss.on('connection', (socket) => {
       cwd: WORKSPACE,
       // Only the built-ins JARVIS uses. Everything else is not merely denied
       // but absent from the model's context. See builtinTools in policy.mjs.
-      tools: builtinTools(ALLOW_WRITES),
+      tools: builtinTools(ALLOW_WRITES, { skills: SKILLS.length > 0 }),
+      // Skills arrive only as plugins, since settingSources is empty, and the
+      // list is exact: the CLI's own bundled skills stay out of the session.
+      // skipMcpDiscovery because every MCP server this session gets is the
+      // explicit list above.
+      ...(SKILLS.length
+        ? {
+            plugins: [{ type: 'local', path: INSTAGRAM_PLUGIN_DIR, skipMcpDiscovery: true }],
+            skills: SKILLS,
+          }
+        : {}),
       hooks: { PreToolUse: [{ hooks: [enforcePolicy] }] },
       // No filesystem settings at all. Left to its default the SDK loads
       // ~/.claude/settings.json and settings.local.json exactly as the CLI
