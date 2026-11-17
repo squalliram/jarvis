@@ -1323,6 +1323,18 @@ wss.on('connection', (socket) => {
 
   /** What this turn did, for the notification sent when it ends. */
   const turnLog = turnRecorder({ allowWrites: ALLOW_WRITES })
+  let turnInFlight = false
+
+  /**
+   * Hand the finished turn to the Command Centre, if it is worth reporting.
+   * Never awaited: a slow or unreachable server must not hold up the turn.
+   */
+  const reportTurn = (outcome, reply) => {
+    turnInFlight = false
+    const done = turnLog.finish()
+    const note = NOTIFY && turnNotification({ outcome, ...done, reply, secrets: NOTIFY_SECRETS })
+    if (note) void NOTIFY(note)
+  }
 
   const settleTool = (id, failed) => {
     const name = heldTools.get(id)
@@ -1559,21 +1571,12 @@ wss.on('connection', (socket) => {
                 message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
               })
             }
-            // After the answer is on its way, and never awaited: a slow or
-            // unreachable Command Centre must not hold up the turn.
-            const done = turnLog.finish()
-            const note =
-              NOTIFY &&
-              turnNotification({
-                outcome,
-                ...done,
-                reply:
-                  outcome === 'ok'
-                    ? msg.result ?? ''
-                    : RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
-                secrets: NOTIFY_SECRETS,
-              })
-            if (note) void NOTIFY(note)
+            reportTurn(
+              outcome,
+              outcome === 'ok'
+                ? msg.result ?? ''
+                : RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
+            )
             cancelledAsk = null
             // Whatever was waiting on this turn to finish can go now. This is
             // the only place a turn is genuinely over.
@@ -1601,6 +1604,12 @@ wss.on('connection', (socket) => {
       }
     } catch (err) {
       console.error('[jarvis] session error:', err)
+      // A turn cut off by the crash never gets its result, but it failed, and
+      // any write it made before dying is worth knowing about. Not when the
+      // user cancelled it or closed the page — that is not a failure.
+      if (turnInFlight && !closed && !(cancelledAsk !== null && cancelledAsk === answering)) {
+        reportTurn('failed', 'The session stopped unexpectedly.')
+      }
       send({ type: 'error', message: String(err?.message ?? err) })
       // The stream is finished either way — nothing will ever be read from it
       // again. Leaving the socket open would leave the client believing it has
@@ -1639,6 +1648,7 @@ wss.on('connection', (socket) => {
       const id = typeof msg.id === 'string' ? msg.id : null
       void settling.then(() => {
         answering = id
+        turnInFlight = true
         if (deliver) {
           const resolve = deliver
           deliver = null
