@@ -304,6 +304,8 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_FILE_ROOTS` | none | Extra folders the file tools and the `/file` endpoint may use |
 | `JARVIS_KEEP_TRANSCRIPTS` | off | `1` keeps the SDK's session transcripts in `~/.claude/projects` |
 | `JARVIS_CLAUDE_EXECUTABLE` | bundled CLI | Run the agent through this executable instead, e.g. a sandbox wrapper that execs the real CLI |
+| `JARVIS_NOTIFY_TOKEN` | none | Bearer token for the Command Centre Inbox. When set, each turn that ran a write tool or failed sends one notification (see below) |
+| `JARVIS_NOTIFY_URL` | `https://iramkhan.com/command-centre/api/v1/notifications` | Where notifications go; must be https unless it is localhost |
 | `JARVIS_CHROME_PIPE` | none | WSL only: the Windows pipe name the browser relay connects to |
 | `JARVIS_DEBUG` | off | `1` logs every agent message to the bridge terminal, answer text and tool calls included |
 | `JARVIS_VOICE_ID` | none | ElevenLabs voice id |
@@ -397,10 +399,29 @@ not forward it.
 
 ---
 
+## Notifications
+
+With `JARVIS_NOTIFY_TOKEN` set, the bridge reports to the Command Centre Inbox,
+which also pushes to Telegram. At the end of a turn it sends one notification
+when the turn ran a tool `bridge/policy.mjs` counts as a write (allowed, and
+actually executed), with outcome `ok` or `failed`, or when the turn failed.
+Read-only turns and turns you cancelled send nothing.
+
+The title names the write tools and quotes up to 200 characters of the final
+reply, with anything shaped like a key or token cut out. Tool inputs and
+outputs are never sent; the only thing taken from a write's output is an https
+link, attached when there is exactly one (a pull request the turn opened, say).
+
+The request is fire-and-forget: a 5-second timeout, no retries, and nothing
+waits for it, so it never delays or fails a turn. Errors are logged by status
+alone, without the token or the body. The code is in `bridge/notify.mjs`.
+
+---
+
 ## Tests
 
 `npm test` runs the bridge's tests with Node's built-in runner. They cover the
-network binding, the tool policy, the MCP server allowlist, the vendored
+network binding, the tool policy, the Command Centre notifications, the MCP server allowlist, the vendored
 Instagram plugin and the WSL browser relay, which runs only under WSL. The network and allowlist tests start the
 bridge on a random loopback port, and none of the tests opens an agent session.
 

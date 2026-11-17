@@ -27,6 +27,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { createNotifier, notifyConfig, turnNotification, turnRecorder } from './notify.mjs'
 import { INSTAGRAM_DATA_DIR, INSTAGRAM_PLUGIN_DIR, instagramSkills } from './instagram.mjs'
 import {
   builtinTools,
@@ -310,7 +311,7 @@ const TOOL_ROOTS = fileRoots({
  * including the ones the CLI would otherwise approve on its own without
  * consulting canUseTool — see policy.mjs for the measurement.
  */
-const enforcePolicy = async (input) => {
+const enforcePolicy = async (input, toolUseID, onDeny) => {
   const verdict = checkToolUse(input.tool_name, input.tool_input, {
     allowWrites: ALLOW_WRITES,
     cwd: WORKSPACE,
@@ -323,6 +324,7 @@ const enforcePolicy = async (input) => {
   }
   if (!reason) return {}
   console.log(`[jarvis] tool ${input.tool_name} -> deny (policy)`)
+  onDeny?.(input.tool_use_id ?? toolUseID)
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -1147,6 +1149,14 @@ console.log(
  * What to tell the browser when a turn ends badly. Plain sentences, because
  * whatever reaches the client is liable to be spoken.
  */
+/**
+ * The Command Centre Inbox, told about turns that changed something or
+ * failed. Off unless JARVIS_NOTIFY_TOKEN is set; see notify.mjs.
+ */
+const NOTIFY = createNotifier(notifyConfig())
+if (NOTIFY) console.log('[jarvis] notifications on: writes and failures go to the Command Centre')
+const NOTIFY_SECRETS = [process.env.JARVIS_NOTIFY_TOKEN?.trim(), process.env.ELEVENLABS_API_KEY]
+
 const RESULT_FAILURES = {
   error_during_execution: 'The turn failed part way through.',
   error_max_turns: 'The turn ran too long and was stopped.',
@@ -1311,6 +1321,9 @@ wss.on('connection', (socket) => {
     if (id) heldTools.set(id, name)
   }
 
+  /** What this turn did, for the notification sent when it ends. */
+  const turnLog = turnRecorder({ allowWrites: ALLOW_WRITES })
+
   const settleTool = (id, failed) => {
     const name = heldTools.get(id)
     if (name === undefined) return
@@ -1371,7 +1384,11 @@ wss.on('connection', (socket) => {
             skills: SKILLS,
           }
         : {}),
-      hooks: { PreToolUse: [{ hooks: [enforcePolicy] }] },
+      hooks: {
+        PreToolUse: [
+          { hooks: [(input, toolUseID) => enforcePolicy(input, toolUseID, turnLog.denied)] },
+        ],
+      },
       // No filesystem settings at all. Left to its default the SDK loads
       // ~/.claude/settings.json and settings.local.json exactly as the CLI
       // does — which on a working machine means a bypassPermissions default
@@ -1423,9 +1440,10 @@ wss.on('connection', (socket) => {
       // through a `Bash: cat file` or a Read inside the working directory
       // without asking. The PreToolUse hook above is what sees those; this
       // stays so that anything the CLI does ask about is still decided here.
-      canUseTool: async (toolName) => {
+      canUseTool: async (toolName, _input, options) => {
         const ok = decideTool(toolName)
         console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
+        if (!ok) turnLog.denied(options?.toolUseID)
         return ok
           ? { behavior: 'allow' }
           : {
@@ -1476,6 +1494,7 @@ wss.on('connection', (socket) => {
               ev.content_block?.type === 'tool_use'
             ) {
               announceTool(ev.content_block.id, ev.content_block.name)
+              turnLog.seen(ev.content_block.id, ev.content_block.name)
             }
             break
           }
@@ -1486,6 +1505,7 @@ wss.on('connection', (socket) => {
             for (const block of msg.content ?? msg.message?.content ?? []) {
               if (block.type === 'tool_use') {
                 announceTool(block.id, block.name)
+                turnLog.seen(block.id, block.name)
               }
             }
             break
@@ -1500,18 +1520,21 @@ wss.on('connection', (socket) => {
             for (const block of blocks) {
               if (block?.type === 'tool_result') {
                 settleTool(block.tool_use_id, block.is_error === true)
+                turnLog.settled(block.tool_use_id, block.content)
               }
             }
             break
           }
 
-          case 'result':
+          case 'result': {
+            let outcome
             // A result is not automatically a success. The error subtypes
             // carry no `result` field at all, so reporting them as 'done' with
             // empty text is indistinguishable from a turn that simply had
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
             if (msg.subtype === 'success') {
+              outcome = 'ok'
               sendTurn({
                 type: 'done',
                 text: msg.result ?? '',
@@ -1523,8 +1546,10 @@ wss.on('connection', (socket) => {
               // this id — sending an error would be a message nobody reads,
               // and logging one puts a failure in the log for a feature that
               // worked.
+              outcome = 'cancelled'
               console.log('[jarvis] turn interrupted')
             } else {
+              outcome = 'failed'
               console.error(
                 `[jarvis] turn failed: ${msg.subtype}`,
                 msg.errors ?? '',
@@ -1534,6 +1559,21 @@ wss.on('connection', (socket) => {
                 message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
               })
             }
+            // After the answer is on its way, and never awaited: a slow or
+            // unreachable Command Centre must not hold up the turn.
+            const done = turnLog.finish()
+            const note =
+              NOTIFY &&
+              turnNotification({
+                outcome,
+                ...done,
+                reply:
+                  outcome === 'ok'
+                    ? msg.result ?? ''
+                    : RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
+                secrets: NOTIFY_SECRETS,
+              })
+            if (note) void NOTIFY(note)
             cancelledAsk = null
             // Whatever was waiting on this turn to finish can go now. This is
             // the only place a turn is genuinely over.
@@ -1544,6 +1584,7 @@ wss.on('connection', (socket) => {
             seenTools.clear()
             heldTools.clear()
             break
+          }
 
           case 'system':
             if (msg.subtype === 'init') {
