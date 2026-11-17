@@ -242,3 +242,13 @@ test('a link is added only when it clearly belongs to the action', () => {
   ])
   assert.deepEqual(rec.finish().links, [])
 })
+
+test('a link carrying a credential in its path is dropped', () => {
+  const base = { outcome: 'ok', writes: ['Bash'], secrets: [TOKEN] }
+  assert.equal(turnNotification({ ...base, links: [`https://x.example/hook/${TOKEN}`] }).link, undefined)
+  assert.equal(turnNotification({ ...base, links: ['https://x.example/s/ghp_ABCDEFGHIJKLMNOP'] }).link, undefined)
+  assert.equal(
+    turnNotification({ ...base, links: ['https://github.com/squalliram/jarvis/pull/7'] }).link,
+    'https://github.com/squalliram/jarvis/pull/7',
+  )
+})

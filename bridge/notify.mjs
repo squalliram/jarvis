@@ -220,6 +220,8 @@ export function turnNotification({ outcome, writes = [], links = [], reply = '',
     const mentioned = links.filter((l) => reply.includes(l))
     if (mentioned.length === 1) link = mentioned[0]
   }
-  if (link) body.link = link
+  // A path can carry a credential too (a signed or share URL); such a link is
+  // dropped rather than trimmed, since a trimmed one would not work anyway.
+  if (link && redact(link, secrets) === link) body.link = link
   return body
 }
